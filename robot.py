@@ -104,7 +104,7 @@ def plot_full_pipeline_animation(q_safe, q_hover1, q_target1, q_hover2, q_target
 # 4. Streamlit UI 界面与【MQTT 云端通信】
 # ==========================================
 st.set_page_config(page_title="公网云端 3D 可视化", layout="wide")
-st.title("🏭 基于LVGL与云端的模块化机械臂分拣系统 (MQTT版)")
+st.title("🏭 基于LVGL与云端的模块化机械臂分拣系统")
 
 # --- 侧边栏：云端 MQTT 服务器配置 ---
 with st.sidebar:
