@@ -6,14 +6,12 @@ import json
 import paho.mqtt.client as mqtt
 
 # ==========================================
-# 0. 页面全局配置与顶级标题 (包含移动端自适应 CSS)
+# 0. 页面全局配置与移动端适配 CSS
 # ==========================================
 st.set_page_config(page_title="模块化机械臂分拣系统", layout="wide", initial_sidebar_state="expanded")
 
-# 注入移动端专属 CSS，实现完美自适应
 st.markdown("""
     <style>
-    /* 针对手机屏幕（宽度小于 768px）进行专属优化 */
     @media (max-width: 768px) {
         .block-container {
             padding-top: 1rem !important;
@@ -33,14 +31,38 @@ st.markdown("""
             padding: 10px 4px !important;
         }
     }
-    
-    /* 隐藏 Streamlit 自带菜单和水印，更像原生 App */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
-# 华丽的顶部大标题
+# ==========================================
+# 1. 🔐 系统安全登录拦截器
+# ==========================================
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("<div style='margin-top: 100px;'></div>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center; color: #1E88E5;'>🛡️ 机械臂中控台安全验证</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: gray;'>警告：非授权人员禁止操作物理实验设备</p>", unsafe_allow_html=True)
+        
+        st.write("")
+        pwd = st.text_input("请输入访问密码：", type="password", placeholder="请输入授权密码...")
+        
+        if st.button("🚀 登 入 系 统", type="primary", width="stretch"):
+            if pwd == "123456": 
+                st.session_state.logged_in = True
+                st.rerun() 
+            else:
+                st.error("❌ 密码错误，请重新输入或联系系统管理员。")
+    st.stop() 
+
+# ==========================================
+# (主系统)
+# ==========================================
 st.markdown("""
     <h1 style='text-align: center; color: #1E88E5; padding-bottom: 20px;'>
         🦾 基于 LVGL 与视觉识别的模块化机械臂分拣系统
@@ -48,7 +70,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 机械臂物理参数 (数字孪生模型)
+# 2. 机械臂物理参数
 # ==========================================
 class RobotParams:
     L1 = 0.08; L2 = 0.155; L3 = 0.11; L4 = 0.11
@@ -59,7 +81,7 @@ Q_SAFE = np.array([0.0, -24.0, -41.0, 75.0])
 HOVER_OFFSET = 0.05  
 
 # ==========================================
-# 2. 运动学算法与状态记忆
+# 3. 运动学算法与状态记忆
 # ==========================================
 if "curr_x" not in st.session_state: st.session_state.curr_x = 0.150
 if "curr_y" not in st.session_state: st.session_state.curr_y = 0.000
@@ -75,15 +97,15 @@ def calculate_4dof_ik(x, y, z):
         A = np.sqrt(p.L2**2 + p.d2**2); alpha1 = np.arctan2(p.d2, p.L2)
         B = np.sqrt(p.L3**2 + p.d3**2); alpha2 = np.arctan2(p.d3, p.L3)
         D_sq = r_j4**2 + z_j4**2; D = np.sqrt(D_sq)
-        if D > (A + B) or D < abs(A - B): return None, "目标超出臂展范围"
+        if D > (A + B) or D < abs(A - B): return None, "超出限界"
         cos_u2 = np.clip((D_sq - A**2 - B**2) / (2 * A * B), -1, 1)
         u2 = -np.arccos(cos_u2) 
         u1 = np.arctan2(z_j4, r_j4) - np.arctan2(B * np.sin(u2), A + B * np.cos(u2))
         m1, m2, m3 = j1_math, u1 - alpha1, u2 + alpha1 - alpha2
         m4 = -np.pi/2 - m2 - m3
-        return np.array([np.degrees(m1), np.degrees(np.pi/2 - m2), np.degrees(m3 + np.pi/2), np.degrees(-m4)]), "校验通过"
+        return np.array([np.degrees(m1), np.degrees(np.pi/2 - m2), np.degrees(m3 + np.pi/2), np.degrees(-m4)]), "OK"
     except Exception as e:
-        return None, f"解算错误: {str(e)}"
+        return None, "Error"
 
 def forward_kinematics_3d(hw_angles):
     j1, j2, j3, j4 = np.radians(hw_angles)
@@ -101,7 +123,7 @@ def forward_kinematics_3d(hw_angles):
     return np.array(pts)
 
 # ==========================================
-# 3. 3D 动画引擎
+# 4. 3D 动画引擎
 # ==========================================
 def plot_dynamic_trajectory(points_list, direct_move=False):
     fig = go.Figure()
@@ -109,18 +131,24 @@ def plot_dynamic_trajectory(points_list, direct_move=False):
     u, v = np.linspace(0, 2 * np.pi, 30), np.linspace(0, np.pi / 2, 15) 
     fig.add_trace(go.Surface(x=R_max * np.outer(np.cos(u), np.sin(v)), y=R_max * np.outer(np.sin(u), np.sin(v)), z=p.L1 + R_max * np.outer(np.ones(np.size(u)), np.cos(v)), opacity=0.1, colorscale='Blues', showscale=False, name='工作空间'))
 
-    if direct_move:
-        key_angles_seq = [calculate_4dof_ik(pt[0], pt[1], pt[2])[0] for pt in points_list if calculate_4dof_ik(pt[0], pt[1], pt[2])[0] is not None]
-    else:
-        key_angles_seq = [Q_SAFE]
-        for pt in points_list:
-            ans_h, _ = calculate_4dof_ik(pt[0], pt[1], pt[2] + HOVER_OFFSET)
-            ans_t, _ = calculate_4dof_ik(pt[0], pt[1], pt[2])
-            key_angles_seq.extend([ans_h, ans_t, ans_h, Q_SAFE])
+    key_angles_seq = [Q_SAFE]
+    
+    if len(points_list) > 0:
+        if direct_move:
+            valid_angles = [calculate_4dof_ik(pt[0], pt[1], pt[2])[0] for pt in points_list]
+            key_angles_seq = [a for a in valid_angles if a is not None]
+        else:
+            for pt in points_list:
+                ans_h, _ = calculate_4dof_ik(pt[0], pt[1], pt[2] + HOVER_OFFSET)
+                ans_t, _ = calculate_4dof_ik(pt[0], pt[1], pt[2])
+                if ans_h is not None and ans_t is not None:
+                    key_angles_seq.extend([ans_h, ans_t, ans_h, Q_SAFE])
 
     if len(key_angles_seq) > 0:
         tcp_pts = [forward_kinematics_3d(q)[-1] for q in key_angles_seq]
-        fig.add_trace(go.Scatter3d(x=[pt[0] for pt in tcp_pts], y=[pt[1] for pt in tcp_pts], z=[pt[2] for pt in tcp_pts], mode='lines+markers', line=dict(color='red', width=4, dash='dash'), marker=dict(size=6, color='red'), name='预计轨迹'))
+        if len(key_angles_seq) > 1:
+            fig.add_trace(go.Scatter3d(x=[pt[0] for pt in tcp_pts], y=[pt[1] for pt in tcp_pts], z=[pt[2] for pt in tcp_pts], mode='lines+markers', line=dict(color='red', width=4, dash='dash'), marker=dict(size=6, color='red'), name='预计轨迹'))
+        
         init_pts = forward_kinematics_3d(key_angles_seq[0])
         fig.add_trace(go.Scatter3d(x=init_pts[:,0], y=init_pts[:,1], z=init_pts[:,2], mode='lines+markers', line=dict(color='darkblue', width=10), marker=dict(size=8, color=['black', 'orange', 'orange', 'orange', 'green']), name='数字孪生'))
 
@@ -139,7 +167,7 @@ def plot_dynamic_trajectory(points_list, direct_move=False):
     return fig
 
 # ==========================================
-# 4. 侧边栏：纯净的系统设置区
+# 5. 侧边栏：核心控制链路
 # ==========================================
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/robot-3.png", width=80) 
@@ -160,6 +188,11 @@ with st.sidebar:
             st.error("❌ 网络异常")
             
     st.divider()
+    
+    if st.button("🚪 安全退出系统", width="stretch"):
+        st.session_state.logged_in = False
+        st.rerun()
+        
     st.info("💡 **系统提示**\n\n请在右侧主工作区的不同选项卡中，切换机械臂的运行模式。")
 
 def send_mqtt_payload(payload_dict):
@@ -182,7 +215,7 @@ def check_reachable(x, y, z, hover=True):
         return calculate_4dof_ik(x, y, z)[0] is not None
 
 # ==========================================
-# 5. 主工作区：选项卡 (Tabs) 现代布局
+# 6. 主工作区
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs([
     "🎯 模式一：单点门字型抓取", 
@@ -197,15 +230,24 @@ with tab1:
     c1, c2 = st.columns([1, 1.8])
     with c1:
         st.write("##### 📍 目标点坐标设定")
-        x1 = st.slider("X 轴坐标 (m)", -0.25, 0.25, 0.15, step=0.001, key="t1_x")
-        y1 = st.slider("Y 轴坐标 (m)", -0.25, 0.25, 0.05, step=0.001, key="t1_y")
-        z1 = st.slider("Z 轴高度 (m)", -0.05, 0.25, 0.05, step=0.001, key="t1_z")
+        x1 = st.slider("X 轴坐标 (m)", -0.25, 0.25, 0.15, step=0.001, format="%.3f", key="t1_x")
+        y1 = st.slider("Y 轴坐标 (m)", -0.25, 0.25, 0.05, step=0.001, format="%.3f", key="t1_y")
+        z1 = st.slider("Z 轴高度 (m)", -0.05, 0.25, 0.05, step=0.001, format="%.3f", key="t1_z")
         
+        is_ok = check_reachable(x1, y1, z1)
         st.divider()
-        if st.button("🚀 编译并下发单点任务", type="primary", width="stretch") and check_reachable(x1, y1, z1):
-            send_mqtt_payload({"mode": 1, "target": {"x": x1, "y": y1, "z": z1, "claw": 1}})
+        
+        if is_ok:
+            if st.button("🚀 编译并下发单点任务", type="primary", width="stretch"):
+                send_mqtt_payload({"mode": 1, "target": {"x": x1, "y": y1, "z": z1, "claw": 1}})
+        else:
+            st.error("⚠️ 坐标超出设置范围，无法下发！")
+            
     with c2: 
-        st.plotly_chart(plot_dynamic_trajectory([(x1, y1, z1)]), width="stretch")
+        if is_ok:
+            st.plotly_chart(plot_dynamic_trajectory([(x1, y1, z1)]), width="stretch", key="chart_t1_ok")
+        else:
+            st.plotly_chart(plot_dynamic_trajectory([]), width="stretch", key="chart_t1_err")
 
 # --- Tab 2: 双点搬运 ---
 with tab2:
@@ -213,41 +255,51 @@ with tab2:
     c1, c2 = st.columns([1, 1.8])
     with c1:
         with st.expander("📦 取料点参数设定", expanded=True):
-            p1x = st.slider("X1", -0.25, 0.25, 0.15, step=0.001, key="t2_x1")
-            p1y = st.slider("Y1", -0.25, 0.25, 0.05, step=0.001, key="t2_y1")
-            p1z = st.slider("Z1", -0.05, 0.25, 0.05, step=0.001, key="t2_z1")
+            p1x = st.slider("X1", -0.25, 0.25, 0.15, step=0.001, format="%.3f", key="t2_x1")
+            p1y = st.slider("Y1", -0.25, 0.25, 0.05, step=0.001, format="%.3f", key="t2_y1")
+            p1z = st.slider("Z1", -0.05, 0.25, 0.05, step=0.001, format="%.3f", key="t2_z1")
         with st.expander("📤 放料点参数设定", expanded=True):
-            p2x = st.slider("X2", -0.25, 0.25, 0.15, step=0.001, key="t2_x2")
-            p2y = st.slider("Y2", -0.25, 0.25, -0.05, step=0.001, key="t2_y2")
-            p2z = st.slider("Z2", -0.05, 0.25, 0.05, step=0.001, key="t2_z2")
+            p2x = st.slider("X2", -0.25, 0.25, 0.15, step=0.001, format="%.3f", key="t2_x2")
+            p2y = st.slider("Y2", -0.25, 0.25, -0.05, step=0.001, format="%.3f", key="t2_y2")
+            p2z = st.slider("Z2", -0.05, 0.25, 0.05, step=0.001, format="%.3f", key="t2_z2")
             
+        is_all_ok = check_reachable(p1x, p1y, p1z) and check_reachable(p2x, p2y, p2z)
         st.divider()
-        if st.button("🚀 编译并下发流水线任务", type="primary", width="stretch"):
-            send_mqtt_payload({"mode": 2, "t1": {"x": p1x, "y": p1y, "z": p1z, "claw": 1}, "t2": {"x": p2x, "y": p2y, "z": p2z, "claw": 0}})
+        
+        if is_all_ok:
+            if st.button("🚀 编译并下发流水线任务", type="primary", width="stretch"):
+                send_mqtt_payload({"mode": 2, "t1": {"x": p1x, "y": p1y, "z": p1z, "claw": 1}, "t2": {"x": p2x, "y": p2y, "z": p2z, "claw": 0}})
+        else:
+            st.error("⚠️ 流水线坐标超出设置范围，无法下发！")
+            
     with c2: 
-        st.plotly_chart(plot_dynamic_trajectory([(p1x, p1y, p1z), (p2x, p2y, p2z)]), width="stretch")
+        if is_all_ok:
+            st.plotly_chart(plot_dynamic_trajectory([(p1x, p1y, p1z), (p2x, p2y, p2z)]), width="stretch", key="chart_t2_ok")
+        else:
+            st.plotly_chart(plot_dynamic_trajectory([]), width="stretch", key="chart_t2_err")
 
 # --- Tab 3: 阵列式多次作业 ---
 with tab3:
     st.markdown("#### ✨ 阵列式复杂路径规划 (支持 LVGL 视觉坐标连续传入)")
     col1, col2 = st.columns([1, 1.8])
     with col1:
-        num_points = st.number_input("设定流水线连续作业的节点数量：", min_value=2, max_value=8, value=3, step=1)
+        # ⚠️ 修复点：已将最小节点数强制限制为 3
+        num_points = st.number_input("设定流水线连续作业的节点数量：", min_value=3, max_value=8, value=3, step=1)
         st.divider()
         points_data = []
         is_all_ok = True
         
         for i in range(num_points):
             with st.expander(f"📍 阵列节点 {i+1}", expanded=(i<2)):
-                px = st.slider("X", -0.25, 0.25, 0.15, step=0.001, key=f"mx{i}")
-                py = st.slider("Y", -0.25, 0.25, 0.05 * (1 if i%2==0 else -1), step=0.001, key=f"my{i}")
-                pz = st.slider("Z", -0.05, 0.25, 0.05, step=0.001, key=f"mz{i}")
+                px = st.slider("X", -0.25, 0.25, 0.15, step=0.001, format="%.3f", key=f"mx{i}")
+                py = st.slider("Y", -0.25, 0.25, 0.05 * (1 if i%2==0 else -1), step=0.001, format="%.3f", key=f"my{i}")
+                pz = st.slider("Z", -0.05, 0.25, 0.05, step=0.001, format="%.3f", key=f"mz{i}")
                 claw = st.checkbox("🛠️ 到达后闭合爪子", value=(i%2==0), key=f"mc{i}") 
                 
                 if check_reachable(px, py, pz):
                     points_data.append({"x": px, "y": py, "z": pz, "claw": 1 if claw else 0})
                 else:
-                    st.error(f"⚠️ 节点 {i+1} 及其安全悬停点已超出物理极限！")
+                    st.error(f"⚠️ 节点 {i+1} 已超出设置范围！")
                     is_all_ok = False
                     
         st.divider()
@@ -255,12 +307,14 @@ with tab3:
             if st.button(f"🚀 编译并连续执行 {num_points} 个列阵动作", type="primary", width="stretch"):
                 send_mqtt_payload({"mode": 3, "count": num_points, "pts": points_data})
         else:
-            st.error("⚠️ 必须修正全部红色报错坐标后方可下发任务。")
+            st.error("⚠️ 必须修正所有超出范围的坐标后，方可下发任务。")
 
     with col2:
         if is_all_ok:
             pts_tuple = [(p['x'], p['y'], p['z']) for p in points_data]
-            st.plotly_chart(plot_dynamic_trajectory(pts_tuple), width="stretch")
+            st.plotly_chart(plot_dynamic_trajectory(pts_tuple), width="stretch", key="chart_t3_ok")
+        else:
+            st.plotly_chart(plot_dynamic_trajectory([]), width="stretch", key="chart_t3_err")
 
 # --- Tab 4: 实时摇杆控制 ---
 with tab4:
@@ -281,7 +335,7 @@ with tab4:
                 st.session_state.curr_x, st.session_state.curr_y, st.session_state.curr_z = new_x, new_y, new_z
                 send_mqtt_payload({"mode": 4, "target": {"x": new_x, "y": new_y, "z": new_z, "claw": 1 if st.session_state.claw_closed else 0}})
             else:
-                st.toast("⚠️ 动作已拦截：该方向触及机械臂物理极限边界！")
+                st.error("⚠️ 动作已拦截：坐标超出设置范围！")
 
         c1, c2, c3, c4 = st.columns(4)
         with c2: 
@@ -305,4 +359,4 @@ with tab4:
         st.write("##### 📊 空间位置数字孪生")
         st.metric("实时空间末端坐标 (TCP)", f"X: {st.session_state.curr_x:.3f} | Y: {st.session_state.curr_y:.3f} | Z: {st.session_state.curr_z:.3f}")
         fig = plot_dynamic_trajectory([(st.session_state.curr_x, st.session_state.curr_y, st.session_state.curr_z)], direct_move=True)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, width="stretch", key="chart_t4_ok")
